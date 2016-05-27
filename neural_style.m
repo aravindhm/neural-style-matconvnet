@@ -17,7 +17,7 @@ function neural_style(varargin)
 % tv_weight - Weight of total variational norm (actually the quadratic norm)
 % image_size - the content image will be rescaled such that the largest 
 %     dimension is image_size big. The result image is of the same size as this
-% gpu - 0 indexed gpu number for gpu usage (-1) for cpu mode
+% gpu - 0 indexed gpu number for gpu usage (NaN) for cpu mode
 % pooling - replace max pooling layers with avg pooling by setting this to 'avg'
 % model_file - the matconvnet model of the network to use for your experiment
 % seed - seed for randomly initializing the image ( < 0 for no seed)
@@ -92,9 +92,9 @@ if isfield(cnn, 'net'), cnn = cnn.net; end
 % Load the content image and resize it
 content_image = imread(opts.content_image);
 if(numel(opts.image_size) == 1)
-    opts.image_size = opts.image_size / max(size(content_image));
+    opts.image_rescale = opts.image_size / max(size(content_image));
 end
-content_image = imresize(content_image, opts.image_size, 'bilinear');
+content_image = imresize(content_image, opts.image_rescale, 'bilinear');
 content_image_pp = preprocess(content_image);
 
 % Load style image(s) and preprocess them
@@ -103,7 +103,8 @@ style_images_list = strsplit(opts.style_image, ',');
 style_images_pp = cell(numel(style_images_list), 1);
 for i=1:numel(style_images_list)
     img = imread(style_images_list{i});
-    img = imresize(img, style_size, 'bilinear');
+    style_scale = style_size / max(size(img));
+    img = imresize(img, style_scale, 'bilinear');
     style_images_pp{i} = preprocess(img);
 end
 
@@ -252,10 +253,6 @@ end % End for i=1:numel(cnn.layers)
 % We are done with creating the network. Let's tidy it up.
 net = vl_simplenn_tidy(net);
 
-'please check the network'
-keyboard;
-
-
 % We don't need to base cnn anymore, so clean it up to save memory
 clear cnn;
 
@@ -266,7 +263,7 @@ end
 if strcmp(opts.init, 'random')
     img = randn(size(content_image), 'single') * 0.001;
 elseif strcmp(opts.init, 'image')
-    img = content_image;
+    img = content_image_pp;
 else
     error('Invalid init type');
 end
@@ -321,9 +318,10 @@ elseif strcmp(opts.optimizer, 'adam')
         [img, ~, optim_state] = optim.adam(objfunc, img, optim_config, optim_state);
         change_current_figure(2304);        
         subplot(1,2,1);
-          plot(optim_state.loss_history);
+          semilogy(optim_state.loss_history);
         subplot(1,2,2);
-          imshow(deprocess(img));
+          img_cpu = gather(img);
+          imshow(deprocess(img_cpu));
         drawnow;
     end
 elseif strcmp(opts.optimizer, 'sgd')
@@ -337,7 +335,8 @@ elseif strcmp(opts.optimizer, 'sgd')
         subplot(1,2,1);
           semilogy(optim_state.loss_history);
         subplot(1,2,2);
-          imshow(vl_imsc(img));
+          img_cpu = gather(img);
+          imshow(deprocess(img_cpu));
         drawnow;
     end
 end
@@ -352,7 +351,7 @@ imwrite(gather(img), opts.output_image);
 function img_pp = preprocess(img)
 % -------------------------------------------------------------------------
 % Preprocess the image to be ready for input to the CNN
-mean_pixel = reshape(single([103.939, 116.779, 123.68]), [1, 1, 3]);
+mean_pixel = reshape(single([123.68, 116.779, 103.939]), [1, 1, 3]);
 img_pp = bsxfun(@minus, single(img), mean_pixel);
 
 
@@ -360,7 +359,7 @@ img_pp = bsxfun(@minus, single(img), mean_pixel);
 function img = deprocess(img_pp)
 % -------------------------------------------------------------------------
 % Deprocess the image from network input to regular uint8 image
-mean_pixel = reshape(single([103.939, 116.779, 123.68]), [1, 1, 3]);
+mean_pixel = reshape(single([123.68, 116.779, 103.939]), [1, 1, 3]);
 img = uint8(bsxfun(@plus, img_pp, mean_pixel));
 
 
