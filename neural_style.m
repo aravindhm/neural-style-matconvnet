@@ -1,21 +1,21 @@
 function neural_style(varargin)
-% Perceptual loss based neural_style 
+% Perceptual loss based neural_style
 % Use key value pairs in the arguments to specify the following options
 %
 % For default values see the code below (sorry :( )
 % style_image - Image(s) to use for style ( ',' separated list )
 % style_blend_weights - The relative weights for different style images
 % style_weight - weight of style loss in objective
-% style_scale - scaling for style images. 
+% style_scale - scaling for style images.
 % style_layers - layers from which style loss statistics are computed
 % (',' separated list)
 %
 % content_image - image from which content information is taken
 % content_weight - weight of content loss in objective
 % content_layers - layer from which content information is taken
-% 
+%
 % tv_weight - Weight of total variational norm (actually the quadratic norm)
-% image_size - the content image will be rescaled such that the largest 
+% image_size - the content image will be rescaled such that the largest
 %     dimension is image_size big. The result image is of the same size as this
 % gpu - 0 indexed gpu number for gpu usage (NaN) for cpu mode
 % pooling - replace max pooling layers with avg pooling by setting this to 'avg'
@@ -25,7 +25,7 @@ function neural_style(varargin)
 % dsloss_weight - weight of downsampling loss (for superresolution problems)
 % upsampling_factor - upsampling involved in superresolution problems
 % num_iterations - Number of iterations in the optimization
-% normalize_gradients - Whether or not to normalize the gradients (disable this 
+% normalize_gradients - Whether or not to normalize the gradients (disable this
 %    when gradient checking)
 % init - 'random'/'image' - random initialization / content image based initialization
 % optimizer - 'lbfgs'/'adam' - currently only adam is supported
@@ -35,8 +35,8 @@ function neural_style(varargin)
 % output_image - the output at each iteration will be decided based on this
 
 % Setup matconvnet and vlfeat
-run ../vlfeat/toolbox/vl_setup.m
-run ../matconvnet/matlab/vl_setupnn.m
+run ~/toolboxes/vlfeat/toolbox/vl_setup.m
+run ~/toolboxes/matconvnet/matlab/vl_setupnn.m
 
 % Gradient checking.
 % gtest(@tvloss_forward, @tvloss_backward, [32,32,7], [32,32,7]); % Get's a
@@ -57,14 +57,18 @@ opts.style_layers = 'relu1_2,relu2_2,relu3_3,relu4_3';
 % Content loss options
 opts.content_image = 'examples/inputs/tubingen.jpg';
 opts.content_weight = 5;
-opts.content_layers = 'relu2_2'; 
+opts.content_layers = 'relu2_2';
+
+% Normalisation option (if not set, it will be taken from network)
+% opts.mean_pixel = reshape(single([123.68, 116.779, 103.939]), [1, 1, 3]);  % VGG-verydeep-16
+% opts.mean_pixel = reshape(single([131.4538, 103.9875, 91.4623]), [1, 1, 3]); % VGG-face
 
 % Misc options
 opts.tv_weight = 1e-3;
 opts.image_size = 512;
 opts.gpu = 0;
 opts.pooling = 'max';
-opts.model_file = 'models/imagenet-vgg-verydeep-16.mat';
+opts.model_file = '~/data/nets/imagenet-vgg-verydeep-16.mat';
 opts.seed = -1;
 
 % Superresolution loss options
@@ -75,7 +79,7 @@ opts.upsampling_factor = 4;
 opts.num_iterations = 1000;
 opts.normalize_gradients = false;
 opts.init = 'random';
-opts.optimizer = 'lbfgs'; 
+opts.optimizer = 'adam';
 opts.learning_rate = 1e1;
 
 % Output options
@@ -88,6 +92,12 @@ opts = vl_argparse(opts, varargin); % Parse all the arguments into opts
 % Load the CNN model
 cnn = load(opts.model_file);
 if isfield(cnn, 'net'), cnn = cnn.net; end
+cnn = vl_simplenn_tidy(cnn);
+
+% get mean pixel from network if not explicitely specified above
+if ~isfield(opts, 'mean_pixel')
+    opts.mean_pixel = cnn.meta.normalization.averageImage;
+end
 
 % Load the content image and resize it
 content_image = imread(opts.content_image);
@@ -95,7 +105,7 @@ if(numel(opts.image_size) == 1)
     opts.image_rescale = opts.image_size / max(size(content_image));
 end
 content_image = imresize(content_image, opts.image_rescale, 'bilinear');
-content_image_pp = preprocess(content_image);
+content_image_pp = preprocess(content_image, opts.mean_pixel);
 
 % Load style image(s) and preprocess them
 style_size = ceil(opts.style_scale * opts.image_size);
@@ -105,7 +115,7 @@ for i=1:numel(style_images_list)
     img = imread(style_images_list{i});
     style_scale = style_size / max(size(img));
     img = imresize(img, style_scale, 'bilinear');
-    style_images_pp{i} = preprocess(img);
+    style_images_pp{i} = preprocess(img, opts.mean_pixel);
 end
 
 % Handle style blending weights for multiple style inputs
@@ -146,12 +156,13 @@ net.meta = cnn.meta;
 if opts.tv_weight > 0
     ly.name = 'tvloss';
     ly.type = 'custom';
+    ly.precious = 0;
     ly.strength = opts.tv_weight;
     ly.forward = @tvloss_forward;
     ly.backward = @tvloss_backward;
-    
+
     net.layers{end+1} = ly;
-    
+
     tvloss_index = numel(net.layers);
 else
     tvloss_index = NaN;
@@ -168,9 +179,9 @@ if opts.dsloss_weight > 0
         'stride', opts.upsampling_factor, 'Method', 'avg');
     ly.forward = @dsloss_forward;
     ly.backward = @dsloss_backward;
-    
+
     net.layers{end+1} = ly;
-    
+
     dsloss_index = numel(net.layers);
 else
     dsloss_index = NaN;
@@ -183,7 +194,7 @@ for i=1:numel(cnn.layers)
         ly = cnn.layers{i};
         name = ly.name;
         type = ly.type;
-        
+
         % Check if it is a max pooling layer and whether I need to replace
         % it with an average pooling one.
         if(strcmp(type, 'pool') ...
@@ -196,13 +207,13 @@ for i=1:numel(cnn.layers)
             net.layers{end+1} = ly;
            % res_temp = vl_simplenn(net, content_image_pp);
         end
-        
+
         % See if I should put a content layer here
         if next_content_idx <= numel(content_layers) ...
                 && strcmp(name, content_layers{next_content_idx}) ...
                 && opts.content_weight > 0
             fprintf(1, 'Setting up content layer %d: %s\n', i, name);
-            
+
             % I've run the net forward to get the content target
             res = vl_simplenn(net, content_image_pp);
             ly.target = res(end).x;
@@ -212,19 +223,19 @@ for i=1:numel(cnn.layers)
             ly.normalize = opts.normalize_gradients;
             ly.forward = @contentloss_forward;
             ly.backward = @contentloss_backward;
-            
+
             net.layers{end+1} = ly;
-            
+
             contentlosses_index(next_content_idx) = numel(net.layers);
             next_content_idx = next_content_idx + 1;
         end
-        
+
         % See if I should put a style layer here
         if next_style_idx <= numel(style_layers) ...
                 && strcmp(name, style_layers{next_style_idx}) ...
                 && opts.style_weight > 0
             fprintf(1, 'Setting up style layer %d: %s\n', i, name);
-            
+
             % I've run the net forward to get the content target
             ly.target = 0;
             for style_images_pp_idx = 1:numel(style_images_pp)
@@ -233,21 +244,21 @@ for i=1:numel(cnn.layers)
               ly.target = ly.target + ...
                   (target_i * style_blend_weights(style_images_pp_idx) ) / numel(res(end).x) ;
             end
-            
+
             ly.name = [name, '_styleloss'];
             ly.type = 'custom';
             ly.strength = opts.style_weight;
             ly.normalize = opts.normalize_gradients;
             ly.forward = @styleloss_forward;
             ly.backward = @styleloss_backward;
-            
+
             net.layers{end+1} = ly;
-            
+
             stylelosses_index(next_style_idx) = numel(net.layers);
             next_style_idx = next_style_idx + 1;
         end
-        
-    end 
+
+    end
 end % End for i=1:numel(cnn.layers)
 
 % We are done with creating the network. Let's tidy it up.
@@ -316,12 +327,12 @@ elseif strcmp(opts.optimizer, 'adam')
                             dsloss_index, tvloss_index, opts);
     for t = 1:opts.num_iterations
         [img, ~, optim_state] = optim.adam(objfunc, img, optim_config, optim_state);
-        change_current_figure(2304);        
+        change_current_figure(2304);
         subplot(1,2,1);
           semilogy(optim_state.loss_history);
         subplot(1,2,2);
           img_cpu = gather(img);
-          imshow(deprocess(img_cpu));
+          imshow(deprocess(img_cpu, opts.mean_pixel));
         drawnow;
     end
 elseif strcmp(opts.optimizer, 'sgd')
@@ -336,30 +347,28 @@ elseif strcmp(opts.optimizer, 'sgd')
           semilogy(optim_state.loss_history);
         subplot(1,2,2);
           img_cpu = gather(img);
-          imshow(deprocess(img_cpu));
+          imshow(deprocess(img_cpu, opts.mean_pixel));
         drawnow;
     end
 end
 
 % Save the final result
-img = deprocess(img);
+img = deprocess(img, opts.mean_pixel);
 img = max(min(img, 255), 0);
 imwrite(gather(img), opts.output_image);
 
 
 % -------------------------------------------------------------------------
-function img_pp = preprocess(img)
+function img_pp = preprocess(img, mean_pixel)
 % -------------------------------------------------------------------------
 % Preprocess the image to be ready for input to the CNN
-mean_pixel = reshape(single([123.68, 116.779, 103.939]), [1, 1, 3]);
 img_pp = bsxfun(@minus, single(img), mean_pixel);
 
 
 % -------------------------------------------------------------------------
-function img = deprocess(img_pp)
+function img = deprocess(img_pp,mean_pixel)
 % -------------------------------------------------------------------------
 % Deprocess the image from network input to regular uint8 image
-mean_pixel = reshape(single([123.68, 116.779, 103.939]), [1, 1, 3]);
 img = uint8(bsxfun(@plus, img_pp, mean_pixel));
 
 
@@ -396,7 +405,7 @@ function maybe_save(t, x, opts)
 % -------------------------------------------------------------------------
 should_save = (opts.save_iter > 0) && mod(t, opts.save_iter) == 0 ;
 if should_save
-    img = deprocess(x);
+    img = deprocess(x, opts.mean_pixel);
     img = max(min(img, 255), 0);
     filename = build_filename(opts.output_image, t);
     imwrite(gather(img), filename);
@@ -425,7 +434,7 @@ global num_calls ;
 num_calls = num_calls + 1;
 
 % Updating global num_calls to reflect the iteration count
-res = vl_simplenn(net, x, zeros(sz_y, 'like', x)); 
+res = vl_simplenn(net, x, zeros(sz_y, 'like', x));
 % DZDY is set to zero because all the derivative come from the losses
 % rather than the error at the end of the network.
 
@@ -467,7 +476,7 @@ function resi_1 = contentloss_forward(ly, resi, resi_1)
 % -------------------------------------------------------------------------
 if numel(resi.x) == numel(ly.target)
     % MSECriterion
-    resi_1.aux = sum( (resi.x(:) - ly.target(:)).^2 ) / numel(ly.target); 
+    resi_1.aux = sum( (resi.x(:) - ly.target(:)).^2 ) / numel(ly.target);
     % Multiply by appropriate weight for this loss
     resi_1.aux = resi_1.aux * ly.strength;
     % The pass through for the actual output
@@ -496,7 +505,7 @@ end
 function ccc = grammatrix_forward(x)
 % -------------------------------------------------------------------------
 % Function to compute the cross channel correlation from x
-% Input: x is nRows x nCols x nChannels 
+% Input: x is nRows x nCols x nChannels
 % Result: ccc is nRows x nCols
 x_reshaped = reshape(x, [size(x,1)*size(x,2), size(x,3)]);
 ccc = x_reshaped' * x_reshaped;
@@ -505,7 +514,7 @@ ccc = x_reshaped' * x_reshaped;
 function dzdx = grammatrix_backward(x, dzdccc)
 % -------------------------------------------------------------------------
 % Function to compute derivative of the cross channel correlation op.
-% Inputs: x is nRows x nCols x nChannels, 
+% Inputs: x is nRows x nCols x nChannels,
 %         dzdccc is nRows x nCols
 % Result: dzdx is nRows x nCols x nChannels
 sz = size(x);
@@ -642,15 +651,15 @@ for i=1:numel(resi.x)
     resi.x(i) = resi.x(i) + delta_x;
     resi_1 = forward(ly, resi, resi_1);
     y1 = resi_1.aux;
-    
+
     % f(x-delta_x)
     resi.x(i) = resi.x(i) - 2*delta_x;
     resi_1 = forward(ly, resi, resi_1);
     y2 = resi_1.aux;
-    
+
     % Numerical estimate = (f(x+delta_x) - f(x-delta_x)) / (2*delta_x)
     numerical_estimate = resi_1.dzdx(i) + (y1 - y2) / (2*delta_x);
-    
+
     % Analytical estimate
     resi.x(i) = resi.x(i) + delta_x;
     resi = backward(ly, resi, resi_1);
