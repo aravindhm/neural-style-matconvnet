@@ -59,10 +59,6 @@ opts.content_image = 'examples/inputs/tubingen.jpg';
 opts.content_weight = 5;
 opts.content_layers = 'relu2_2';
 
-% Normalisation option (if not set, it will be taken from network)
-% opts.mean_pixel = reshape(single([123.68, 116.779, 103.939]), [1, 1, 3]);  % VGG-verydeep-16
-% opts.mean_pixel = reshape(single([131.4538, 103.9875, 91.4623]), [1, 1, 3]); % VGG-face
-
 % Misc options
 opts.tv_weight = 1e-3;
 opts.image_size = 512;
@@ -87,17 +83,16 @@ opts.print_iter = 50;
 opts.save_iter = 100;
 opts.output_image = 'out.png';
 
-opts = vl_argparse(opts, varargin); % Parse all the arguments into opts
+[opts, varargin] = vl_argparse(opts, varargin); % Parse all the arguments into opts
 
 % Load the CNN model
 cnn = load(opts.model_file);
 if isfield(cnn, 'net'), cnn = cnn.net; end
 cnn = vl_simplenn_tidy(cnn);
 
-% get mean pixel from network if not explicitely specified above
-if ~isfield(opts, 'mean_pixel')
-    opts.mean_pixel = cnn.meta.normalization.averageImage;
-end
+% Get the mean pixel from the CNN as default value.
+opts.mean_pixel = cnn.meta.normalization.averageImage;
+opts = vl_argparse(opts, varargin); % If the mean_pixel is hard coded.
 
 % Load the content image and resize it
 content_image = imread(opts.content_image);
